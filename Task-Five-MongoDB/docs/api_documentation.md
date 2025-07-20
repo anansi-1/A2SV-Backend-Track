@@ -64,7 +64,7 @@
   `id`: The ID of the task to delete.
   * Response:
     - Status Code: `200 OK`
-    - Body: JSON message `"Task removed"`
+    - Body: JSON message `"Task deleted"`
   * Possible Errors: 
     - `404 Not Found` Task with the specified ID does not exist.
 
