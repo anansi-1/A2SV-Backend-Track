@@ -27,9 +27,9 @@ func SetupRouter(
     {
         taskRoutes.GET("/", taskC.GetAllTasks)
         taskRoutes.GET("/:id", taskC.GetTaskByID)
-        taskRoutes.POST("/", taskC.CreateTask)
-        taskRoutes.PUT("/:id", taskC.UpdateTask)
-        taskRoutes.DELETE("/:id", taskC.DeleteTask)
+        taskRoutes.POST("/", authMiddleware.AdminMiddleware(),taskC.CreateTask)
+        taskRoutes.PUT("/:id", authMiddleware.AdminMiddleware(),taskC.UpdateTask)
+        taskRoutes.DELETE("/:id", authMiddleware.AdminMiddleware(),taskC.DeleteTask)
     }
 
     return router
