@@ -13,27 +13,76 @@ import (
     "go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type ITaskRepository interface {
-    GetAll() ([]Domain.Task, error)
-    GetByID(id string) (Domain.Task, error)
-    Create(task Domain.Task) (Domain.Task, error)
-    Update(id string, task Domain.Task) (Domain.Task, error)
-    Delete(id string) error
-}
-
 type taskRepository struct {
     taskCollection *mongo.Collection
 }
 
-func NewTaskRepository() ITaskRepository {
+//real constructor 
+func NewTaskRepository() Domain.ITaskRepository {
     uri := os.Getenv("MONGODB_URI")
     client, err := mongo.Connect(context.TODO(), options.Client().ApplyURI(uri))
     if err != nil {
         panic(err)
     }
+    collection := client.Database("task_db").Collection("tasks")
+    return &taskRepository{taskCollection: collection}
+}
 
-    taskCollection := client.Database("task_db").Collection("tasks")
-    return &taskRepository{taskCollection: taskCollection}
+//test constructor inject scollection for memongo
+func NewTaskRepositoryWithCollection(collection *mongo.Collection) Domain.ITaskRepository {
+    return &taskRepository{taskCollection: collection}
+}
+
+func (r *taskRepository) Create(task Domain.Task) (Domain.Task, error) {
+   
+    doc := bson.M{
+        "title":       task.Title,
+        "description": task.Description,
+        "due_date":    task.DueDate,
+        "status":      task.Status,
+    }
+
+    res, err := r.taskCollection.InsertOne(context.TODO(), doc)
+    if err != nil {
+        return Domain.Task{}, err
+    }
+
+    oid, ok := res.InsertedID.(primitive.ObjectID)
+    if !ok {
+        return Domain.Task{}, errors.New("failed to convert inserted ID to ObjectID")
+    }
+
+    task.ID = oid.Hex()
+    return task, nil
+}
+
+func (r *taskRepository) GetByID(id string) (Domain.Task, error) {
+    objectID, err := primitive.ObjectIDFromHex(id)
+    if err != nil {
+        return Domain.Task{}, err
+    }
+
+    filter := bson.M{"_id": objectID}
+    var doc bson.M
+    err = r.taskCollection.FindOne(context.TODO(), filter).Decode(&doc)
+    if err != nil {
+        return Domain.Task{}, err
+    }
+
+    task := Domain.Task{
+        ID:          id,
+        Title:       doc["title"].(string),
+        Description: doc["description"].(string),
+        Status:      doc["status"].(string),
+    }
+
+    if dueDate, ok := doc["due_date"].(primitive.DateTime); ok {
+        task.DueDate = dueDate.Time()
+    } else if dueDate, ok := doc["due_date"].(time.Time); ok {
+        task.DueDate = dueDate
+    }
+
+    return task, nil
 }
 
 func (r *taskRepository) GetAll() ([]Domain.Task, error) {
@@ -45,89 +94,33 @@ func (r *taskRepository) GetAll() ([]Domain.Task, error) {
 
     var tasks []Domain.Task
     for cursor.Next(context.TODO()) {
-        var taskDoc bson.M
-        err := cursor.Decode(&taskDoc)
+        var doc bson.M
+        err = cursor.Decode(&doc)
         if err != nil {
             return nil, err
         }
 
-        id, ok := taskDoc["_id"].(primitive.ObjectID)
-        if !ok {
-            return nil, errors.New("invalid ID type")
-        }
-
-        dueDate, ok := taskDoc["due_date"].(primitive.DateTime)
-        if !ok {
-            dueDate = primitive.DateTime(time.Now().Unix() * 1000)
-        }
-
+        id := doc["_id"].(primitive.ObjectID).Hex()
         task := Domain.Task{
-            ID:          id.Hex(),
-            Title:       taskDoc["title"].(string),
-            Description: taskDoc["description"].(string),
-            DueDate:     dueDate.Time(),
-            Status:      taskDoc["status"].(string),
+            ID:          id,
+            Title:       doc["title"].(string),
+            Description: doc["description"].(string),
+            Status:      doc["status"].(string),
         }
+
+        if dueDate, ok := doc["due_date"].(primitive.DateTime); ok {
+            task.DueDate = dueDate.Time()
+        } else if dueDate, ok := doc["due_date"].(time.Time); ok {
+            task.DueDate = dueDate
+        }
+
         tasks = append(tasks, task)
     }
 
     return tasks, nil
 }
 
-func (r *taskRepository) GetByID(id string) (Domain.Task, error) {
-    objectID, err := primitive.ObjectIDFromHex(id)
-    if err != nil {
-        return Domain.Task{}, err
-    }
-
-    filter := bson.M{"_id": objectID}
-    var taskDoc bson.M
-    err = r.taskCollection.FindOne(context.TODO(), filter).Decode(&taskDoc)
-    if err != nil {
-        return Domain.Task{}, err
-    }
-
-    oid, ok := taskDoc["_id"].(primitive.ObjectID)
-    if !ok {
-        return Domain.Task{}, errors.New("invalid ID type")
-    }
-
-    dueDate, ok := taskDoc["due_date"].(primitive.DateTime)
-    if !ok {
-        dueDate = primitive.DateTime(time.Now().Unix() * 1000) 
-    }
-
-    task := Domain.Task{
-        ID:          oid.Hex(),
-        Title:       taskDoc["title"].(string),
-        Description: taskDoc["description"].(string),
-        DueDate:     dueDate.Time(),
-        Status:      taskDoc["status"].(string),
-    }
-    return task, nil
-}
-
-func (r *taskRepository) Create(task Domain.Task) (Domain.Task, error) {
-    newID := primitive.NewObjectID()
-
-    doc := bson.M{
-        "_id":         newID,
-        "title":       task.Title,
-        "description": task.Description,
-        "due_date":    task.DueDate,
-        "status":      task.Status,
-    }
-
-    _, err := r.taskCollection.InsertOne(context.TODO(), doc)
-    if err != nil {
-        return Domain.Task{}, err
-    }
-
-    task.ID = newID.Hex()
-    return task, nil
-}
-
-func (r *taskRepository) Update(id string, task Domain.Task) (Domain.Task, error) {
+func (r *taskRepository) Update(id string, updatedTask Domain.Task) (Domain.Task, error) {
     objectID, err := primitive.ObjectIDFromHex(id)
     if err != nil {
         return Domain.Task{}, err
@@ -136,19 +129,24 @@ func (r *taskRepository) Update(id string, task Domain.Task) (Domain.Task, error
     filter := bson.M{"_id": objectID}
     update := bson.M{
         "$set": bson.M{
-            "title":       task.Title,
-            "description": task.Description,
-            "due_date":    task.DueDate,
-            "status":      task.Status,
+            "title":       updatedTask.Title,
+            "description": updatedTask.Description,
+            "due_date":    updatedTask.DueDate,
+            "status":      updatedTask.Status,
         },
     }
 
-    _, err = r.taskCollection.UpdateOne(context.TODO(), filter, update)
+    res, err := r.taskCollection.UpdateOne(context.TODO(), filter, update)
     if err != nil {
         return Domain.Task{}, err
     }
 
-    return r.GetByID(id)
+    if res.MatchedCount == 0 {
+        return Domain.Task{}, mongo.ErrNoDocuments
+    }
+
+    updatedTask.ID = id
+    return updatedTask, nil
 }
 
 func (r *taskRepository) Delete(id string) error {
@@ -157,6 +155,13 @@ func (r *taskRepository) Delete(id string) error {
         return err
     }
 
-    _, err = r.taskCollection.DeleteOne(context.TODO(), bson.M{"_id": objectID})
-    return err
+    filter := bson.M{"_id": objectID}
+    res, err := r.taskCollection.DeleteOne(context.TODO(), filter)
+    if err != nil {
+        return err
+    }
+    if res.DeletedCount == 0 {
+        return mongo.ErrNoDocuments
+    }
+    return nil
 }
